@@ -1,0 +1,11 @@
+target*
+*.dep
+src/main/resources/git.properties
+.flattened-*.xml
+
+.classpath
+.factorypath
+.project
+.settings/
+
+.vscode
