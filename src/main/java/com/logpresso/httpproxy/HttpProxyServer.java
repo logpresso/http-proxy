@@ -15,6 +15,8 @@ public class HttpProxyServer {
 	private Configuration conf;
 
 	public static void main(String[] args) throws IOException {
+		java.security.Security.setProperty("networkaddress.cache.ttl", "30");
+
 		if (args.length == 0) {
 			System.out.println("Logpresso HTTP proxy 0.1.0 (2022-01-30)");
 			System.out.println("Usage: logpresso-http-proxy [start|install|uninstall]");
