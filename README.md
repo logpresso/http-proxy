@@ -8,12 +8,12 @@ Usage: logpresso-http-proxy [start|install|uninstall]
 ```
 
 ### Getting Started
-* Install Logpresso HTTP proxy as systemd service.
+* Install Logpresso HTTP proxy as systemd service
   * `# ./logpresso-http-proxy install`
-  ```
-  Wrote 91 bytes to /home/xeraph/logpresso-http-proxy.conf
-  Wrote 291 bytes to /lib/systemd/system/logpresso-http-proxy.service
-  ```
+    ```
+     Wrote 91 bytes to /home/xeraph/logpresso-http-proxy.conf
+     Wrote 291 bytes to /lib/systemd/system/logpresso-http-proxy.service
+     ```
 * Review logpresso-http-proxy.conf file.
   * Default proxy server port is 8443.
   * If you want to restrict HTTP traffic to certain web services, specify `[allowlist]`
