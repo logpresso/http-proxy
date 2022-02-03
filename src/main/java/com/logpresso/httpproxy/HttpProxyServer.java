@@ -18,7 +18,7 @@ public class HttpProxyServer {
 		java.security.Security.setProperty("networkaddress.cache.ttl", "30");
 
 		if (args.length == 0) {
-			System.out.println("Logpresso HTTP proxy 0.1.0 (2022-01-30)");
+			System.out.println("Logpresso HTTP proxy 1.0.0 (2022-02-03)");
 			System.out.println("Usage: logpresso-http-proxy [start|install|uninstall]");
 			return;
 		}
@@ -99,11 +99,11 @@ public class HttpProxyServer {
 				ByteBuffer bb = ByteBuffer.wrap(resp.getBytes());
 				ensureWrite(ctx.peerChannel, bb);
 			}
-		} catch (IOException e) {
+		} catch (Throwable t) {
 			try {
-				logger.error("cannot finish connect " + channel.getRemoteAddress() + " (" + e.getMessage() + ")");
-			} catch (IOException e1) {
-				e1.printStackTrace();
+				logger.error("cannot finish connect " + channel.getRemoteAddress() + " (" + t.getMessage() + ")");
+			} catch (IOException e) {
+				e.printStackTrace();
 			}
 		}
 	}
@@ -159,8 +159,19 @@ public class HttpProxyServer {
 	}
 
 	private void ensureWrite(SocketChannel channel, ByteBuffer bb) throws IOException {
+		long start = 0;
 		while (bb.hasRemaining()) {
 			channel.write(bb);
+
+			if (bb.hasRemaining()) {
+				long now = System.currentTimeMillis();
+				if (start == 0) {
+					start = now;
+				} else if (now - start >= 5000) {
+					channel.close();
+					break;
+				}
+			}
 		}
 	}
 

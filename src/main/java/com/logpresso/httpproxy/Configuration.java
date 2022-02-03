@@ -35,7 +35,7 @@ public class Configuration {
 
 				line = line.trim();
 
-				if (line.startsWith("#"))
+				if (line.isEmpty() || line.startsWith("#"))
 					continue;
 
 				String[] tokens = regex.split(line);
@@ -95,6 +95,7 @@ public class Configuration {
 			bw.write("port 8443\n");
 			bw.write("[allowlist]\n");
 			bw.write("# host:port\n");
+			bw.write("# logpresso.watch:443\n");
 		} catch (IOException e) {
 			throw new IllegalStateException("cannot write config file to " + configFile.getAbsolutePath(), e);
 		} finally {
@@ -121,6 +122,7 @@ public class Configuration {
 			bw.write("ConditionPathExists=" + dir.getAbsolutePath() + "/logpresso-http-proxy.conf\n\n");
 			bw.write("[Service]\n");
 			bw.write("Type=simple\n");
+			bw.write("LimitNOFILE=65536\n");
 			bw.write("ExecStart=" + dir.getAbsolutePath() + "/logpresso-http-proxy start\n");
 			bw.write("Restart=on-failure\n");
 			bw.write("[Install]\n");
@@ -137,6 +139,8 @@ public class Configuration {
 		}
 
 		System.out.println("Wrote " + serviceFile.length() + " bytes to " + serviceFile.getAbsolutePath());
+
+		reloadSystemd();
 	}
 
 	public static void uninstall() {
@@ -150,6 +154,15 @@ public class Configuration {
 			System.out.println("uninstalled systemd service");
 		} else {
 			System.out.println("Cannot delete service file " + serviceFile.getAbsolutePath());
+		}
+		
+		reloadSystemd();
+	}
+
+	private static void reloadSystemd() {
+		try {
+			PlatformUtils.execute("systemctl", "daemon-reload");
+		} catch (IOException e) {
 		}
 	}
 
