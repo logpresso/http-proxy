@@ -48,6 +48,8 @@ public class ConnectRequest {
 				host = url.getHost();
 				if (url.getPort() != -1)
 					port = url.getPort();
+
+				target = host + ":" + port;
 			} catch (MalformedURLException e) {
 				throw new IllegalStateException("Malformed HTTP request: " + requestLine, e);
 			}
