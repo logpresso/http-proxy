@@ -76,7 +76,7 @@ public class HttpProxyServer {
 		if (client != null) {
 			client.configureBlocking(false);
 			SelectionKey key = client.register(selector, SelectionKey.OP_READ);
-			key.attach(new Context(null, null, null));
+			key.attach(new Context());
 		}
 	}
 
@@ -94,10 +94,15 @@ public class HttpProxyServer {
 				// set connected channel to client context
 				ctx.peerContext.peerChannel = channel;
 
-				// send connect success to client
-				String resp = ctx.httpVersion + " 200 Connection Established\r\nConnection: close\r\n\r\n";
-				ByteBuffer bb = ByteBuffer.wrap(resp.getBytes());
-				ensureWrite(ctx.peerChannel, bb);
+				if (ctx.forwardData != null) {
+					// For HTTP: forward client's original request to server
+					ensureWrite(channel, ByteBuffer.wrap(ctx.forwardData.getBytes("utf-8")));
+				} else {
+					// For HTTPS: send connect success response to client
+					String resp = ctx.httpVersion + " 200 Connection Established\r\nConnection: close\r\n\r\n";
+					ByteBuffer bb = ByteBuffer.wrap(resp.getBytes());
+					ensureWrite(ctx.peerChannel, bb);
+				}
 			}
 		} catch (Throwable t) {
 			try {
@@ -137,7 +142,9 @@ public class HttpProxyServer {
 					remote.configureBlocking(false);
 					remote.connect(req.getEndpoint());
 					SelectionKey connectKey = remote.register(selector, SelectionKey.OP_CONNECT);
-					connectKey.attach(new Context(channel, ctx, req.getHttpVersion()));
+
+					String forwardData = req.getHttpMethod().equalsIgnoreCase("CONNECT") ? null : headers;
+					connectKey.attach(new Context(channel, ctx, req.getHttpVersion(), forwardData));
 				}
 			} else {
 				ByteBuffer bb = ByteBuffer.wrap(ctx.temp);
@@ -145,14 +152,19 @@ public class HttpProxyServer {
 				if (len > 0) {
 					bb.flip();
 					ensureWrite(ctx.peerChannel, bb);
-					logger.debug("received " + len + " bytes from " + channel.getRemoteAddress() + ", sent to "
+					logger.debug("Received " + len + " bytes from " + channel.getRemoteAddress() + ", sent to "
 							+ ctx.peerChannel.getRemoteAddress());
 				} else {
-					logger.debug("read len " + len + " from " + channel.getRemoteAddress());
+					logger.debug("Read len " + len + " from " + channel.getRemoteAddress());
 					channel.close();
 				}
 			}
 		} catch (Throwable t) {
+			try {
+				logger.debug("Read error from channel: " + channel.getRemoteAddress() + " - " + t.toString());
+			} catch (IOException e) {
+			}
+
 			ensureClose(ctx.peerChannel);
 			ensureClose(channel);
 		}
@@ -179,13 +191,18 @@ public class HttpProxyServer {
 		private SocketChannel peerChannel;
 		private Context peerContext;
 		private String httpVersion;
+		private String forwardData;
 		private byte[] temp = new byte[8192];
 		private ByteArrayOutputStream buffer = new ByteArrayOutputStream();
 
-		public Context(SocketChannel peer, Context peerContext, String httpVersion) {
+		public Context() {
+		}
+
+		public Context(SocketChannel peer, Context peerContext, String httpVersion, String forwardData) {
 			this.peerChannel = peer;
 			this.peerContext = peerContext;
 			this.httpVersion = httpVersion;
+			this.forwardData = forwardData;
 		}
 
 		public boolean isRemote() {
