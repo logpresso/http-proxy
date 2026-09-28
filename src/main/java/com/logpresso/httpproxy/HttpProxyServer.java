@@ -3,6 +3,7 @@ package com.logpresso.httpproxy;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.nio.Buffer;
 import java.nio.ByteBuffer;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
@@ -150,7 +151,8 @@ public class HttpProxyServer {
 				ByteBuffer bb = ByteBuffer.wrap(ctx.temp);
 				int len = channel.read(bb);
 				if (len > 0) {
-					bb.flip();
+					// cast to Buffer: JDK 9+ links ByteBuffer.flip()ByteBuffer, which does not exist on Java 7/8
+					((Buffer) bb).flip();
 					ensureWrite(ctx.peerChannel, bb);
 					logger.debug("Received " + len + " bytes from " + channel.getRemoteAddress() + ", sent to "
 							+ ctx.peerChannel.getRemoteAddress());
