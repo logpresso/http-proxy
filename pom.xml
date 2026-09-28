@@ -102,6 +102,12 @@
 						</executions>
 						<configuration>
 							<imageName>${project.artifactId}</imageName>
+							<buildArgs>
+								<!-- ConnectRequest parses non-CONNECT request targets with java.net.URL -->
+								<buildArg>--enable-url-protocols=http</buildArg>
+								<buildArg>-H:-CheckToolchain</buildArg>
+								<buildArg>-H:+AllowIncompleteClasspath</buildArg>
+							</buildArgs>
 						</configuration>
 					</plugin>
 				</plugins>
