@@ -12,6 +12,9 @@ import java.nio.channels.SocketChannel;
 import java.util.Set;
 
 public class HttpProxyServer {
+	// request headers larger than this are rejected instead of buffered without limit
+	static final int MAX_HEADER_SIZE = 16 * 1024;
+
 	private Logger logger = new ConsoleLogger();
 	private Configuration conf;
 
@@ -19,7 +22,7 @@ public class HttpProxyServer {
 		java.security.Security.setProperty("networkaddress.cache.ttl", "30");
 
 		if (args.length == 0) {
-			System.out.println("Logpresso HTTP proxy 1.1.1 (2026-09-28)");
+			System.out.println("Logpresso HTTP proxy 1.1.2 (2026-11-12)");
 			System.out.println("Usage: logpresso-http-proxy [start|install|uninstall]");
 			return;
 		}
@@ -55,6 +58,11 @@ public class HttpProxyServer {
 				selector.select();
 				Set<SelectionKey> selectedKeys = selector.selectedKeys();
 				for (SelectionKey key : selectedKeys) {
+					// handling another key in this set may have closed this key's channel as its peer
+					if (!key.isValid())
+						continue;
+
+					// read() and connect() close their own connection pair on any error
 					if (key.isAcceptable()) {
 						accept(selector, (ServerSocketChannel) key.channel());
 					} else if (key.isReadable()) {
@@ -90,6 +98,9 @@ public class HttpProxyServer {
 				SelectionKey readKey = channel.register(selector, SelectionKey.OP_READ);
 				readKey.attach(ctx);
 
+				// resume reading the client, paused while the upstream connect was pending
+				ctx.peerChannel.keyFor(selector).interestOps(SelectionKey.OP_READ);
+
 				logger.info(ctx.peerChannel.getRemoteAddress() + " is connected to " + channel.getRemoteAddress());
 
 				// set connected channel to client context
@@ -106,11 +117,8 @@ public class HttpProxyServer {
 				}
 			}
 		} catch (Throwable t) {
-			try {
-				logger.error("cannot finish connect " + channel.getRemoteAddress() + " (" + t.getMessage() + ")");
-			} catch (IOException e) {
-				e.printStackTrace();
-			}
+			logger.error("cannot finish connect " + ctx.endpoint + " (" + t.toString() + ")");
+			closePair(key);
 		}
 	}
 
@@ -122,8 +130,23 @@ public class HttpProxyServer {
 			if (!ctx.isRemote() && ctx.peerChannel == null) {
 				ByteBuffer bb = ByteBuffer.wrap(ctx.temp);
 				int len = channel.read(bb);
+				if (len < 0) {
+					// client closed before sending complete headers; OP_READ is level-triggered and would fire forever
+					logger.debug("Client closed before sending request headers");
+					channel.close();
+					return;
+				}
+
 				if (len > 0)
 					ctx.buffer.write(ctx.temp, 0, len);
+
+				if (ctx.buffer.size() > MAX_HEADER_SIZE) {
+					logger.warn("Rejected request headers over " + MAX_HEADER_SIZE + " bytes from " + channel.getRemoteAddress());
+					String msg = "HTTP/1.1 431 Request Header Fields Too Large\r\nConnection: close\r\n\r\n";
+					ensureWrite(channel, ByteBuffer.wrap(msg.getBytes("utf-8")));
+					channel.close();
+					return;
+				}
 
 				String headers = ctx.buffer.toString("utf-8");
 				if (headers.endsWith("\r\n\r\n")) {
@@ -139,13 +162,22 @@ public class HttpProxyServer {
 
 					logger.debug("Trying to connect " + req.getEndpoint());
 
-					SocketChannel remote = SocketChannel.open();
-					remote.configureBlocking(false);
-					remote.connect(req.getEndpoint());
-					SelectionKey connectKey = remote.register(selector, SelectionKey.OP_CONNECT);
-
 					String forwardData = req.getHttpMethod().equalsIgnoreCase("CONNECT") ? null : headers;
-					connectKey.attach(new Context(channel, ctx, req.getHttpVersion(), forwardData));
+					Context remoteCtx = new Context(channel, ctx, req.getEndpoint(), req.getHttpVersion(), forwardData);
+
+					SocketChannel remote = SocketChannel.open();
+					try {
+						remote.configureBlocking(false);
+						remote.connect(req.getEndpoint());
+						remote.register(selector, SelectionKey.OP_CONNECT, remoteCtx);
+					} catch (IOException | RuntimeException e) {
+						// e.g. UnresolvedAddressException for an unknown host
+						ensureClose(remote);
+						throw e;
+					}
+
+					// stop reading the client until connect() finishes, so the parsed request starts only one connect
+					key.interestOps(0);
 				}
 			} else {
 				ByteBuffer bb = ByteBuffer.wrap(ctx.temp);
@@ -158,17 +190,18 @@ public class HttpProxyServer {
 							+ ctx.peerChannel.getRemoteAddress());
 				} else {
 					logger.debug("Read len " + len + " from " + channel.getRemoteAddress());
-					channel.close();
+					closePair(key);
 				}
 			}
 		} catch (Throwable t) {
 			try {
 				logger.debug("Read error from channel: " + channel.getRemoteAddress() + " - " + t.toString());
 			} catch (IOException e) {
+				// channel already closed; the original error is logged without the address
+				logger.debug("Read error from channel: " + t.toString());
 			}
 
-			ensureClose(ctx.peerChannel);
-			ensureClose(channel);
+			closePair(key);
 		}
 	}
 
@@ -192,6 +225,7 @@ public class HttpProxyServer {
 	private static class Context {
 		private SocketChannel peerChannel;
 		private Context peerContext;
+		private InetSocketAddress endpoint;
 		private String httpVersion;
 		private String forwardData;
 		private byte[] temp = new byte[8192];
@@ -200,9 +234,11 @@ public class HttpProxyServer {
 		public Context() {
 		}
 
-		public Context(SocketChannel peer, Context peerContext, String httpVersion, String forwardData) {
+		public Context(SocketChannel peer, Context peerContext, InetSocketAddress endpoint, String httpVersion,
+				String forwardData) {
 			this.peerChannel = peer;
 			this.peerContext = peerContext;
+			this.endpoint = endpoint;
 			this.httpVersion = httpVersion;
 			this.forwardData = forwardData;
 		}
@@ -210,6 +246,13 @@ public class HttpProxyServer {
 		public boolean isRemote() {
 			return peerContext != null;
 		}
+	}
+
+	private void closePair(SelectionKey key) {
+		Context ctx = (Context) key.attachment();
+		if (ctx != null)
+			ensureClose(ctx.peerChannel);
+		ensureClose((SocketChannel) key.channel());
 	}
 
 	private void ensureClose(SocketChannel c) {
