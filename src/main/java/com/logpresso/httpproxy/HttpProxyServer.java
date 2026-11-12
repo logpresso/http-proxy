@@ -19,7 +19,7 @@ public class HttpProxyServer {
 		java.security.Security.setProperty("networkaddress.cache.ttl", "30");
 
 		if (args.length == 0) {
-			System.out.println("Logpresso HTTP proxy 1.1.1 (2026-09-28)");
+			System.out.println("Logpresso HTTP proxy 1.1.2 (2026-11-12)");
 			System.out.println("Usage: logpresso-http-proxy [start|install|uninstall]");
 			return;
 		}
