@@ -55,12 +55,22 @@ public class HttpProxyServer {
 				selector.select();
 				Set<SelectionKey> selectedKeys = selector.selectedKeys();
 				for (SelectionKey key : selectedKeys) {
-					if (key.isAcceptable()) {
-						accept(selector, (ServerSocketChannel) key.channel());
-					} else if (key.isReadable()) {
-						read(selector, key);
-					} else if (key.isConnectable()) {
-						connect(selector, key);
+					// handling another key in this set may have closed this key's channel as its peer
+					if (!key.isValid())
+						continue;
+
+					try {
+						if (key.isAcceptable()) {
+							accept(selector, (ServerSocketChannel) key.channel());
+						} else if (key.isReadable()) {
+							read(selector, key);
+						} else if (key.isConnectable()) {
+							connect(selector, key);
+						}
+					} catch (Throwable t) {
+						logger.error("cannot handle selected key: " + t.toString());
+						if (key.channel() instanceof SocketChannel)
+							closePair(key);
 					}
 				}
 
@@ -111,6 +121,8 @@ public class HttpProxyServer {
 			} catch (IOException e) {
 				e.printStackTrace();
 			}
+
+			closePair(key);
 		}
 	}
 
@@ -210,6 +222,13 @@ public class HttpProxyServer {
 		public boolean isRemote() {
 			return peerContext != null;
 		}
+	}
+
+	private void closePair(SelectionKey key) {
+		Context ctx = (Context) key.attachment();
+		if (ctx != null)
+			ensureClose(ctx.peerChannel);
+		ensureClose((SocketChannel) key.channel());
 	}
 
 	private void ensureClose(SocketChannel c) {
