@@ -5,16 +5,21 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.lang.management.ManagementFactory;
+import java.lang.management.ThreadMXBean;
 import java.lang.reflect.Field;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.After;
+import org.junit.Assume;
 import org.junit.Before;
 import org.junit.Test;
 
@@ -97,6 +102,9 @@ public class HttpProxyServerTest {
 		assertNull("proxy loop died: " + proxyFailure.get(), proxyFailure.get());
 		assertTrue(proxyThread.isAlive());
 
+		// the reset client of tunnel Y also closed its upstream side
+		assertEquals(-1, y[1].getInputStream().read());
+
 		// the proxy still relays new tunnels
 		Socket[] z = openTunnel();
 		z[1].getOutputStream().write("ping".getBytes("utf-8"));
@@ -128,6 +136,74 @@ public class HttpProxyServerTest {
 		assertNull(proxyFailure.get());
 	}
 
+	// a client that connects and closes without sending headers (health check, port scan) must be closed, not
+	// left registered: OP_READ is level-triggered, so an ignored EOF spins the selector and leaks the channel
+	@Test(timeout = 30000)
+	public void closesClientThatClosesBeforeHeaders() throws Exception {
+		File fdDir = new File("/proc/self/fd");
+		Assume.assumeTrue(fdDir.isDirectory());
+
+		// the connect probe in setUp() already closed one client before headers
+		assertProxyIdle();
+		int baseline = fdDir.list().length;
+
+		for (int i = 0; i < 20; i++) {
+			Socket s = new Socket("127.0.0.1", proxyPort);
+			s.close();
+		}
+
+		long deadline = System.currentTimeMillis() + 5000;
+		int count = fdDir.list().length;
+		while (count > baseline && System.currentTimeMillis() < deadline) {
+			Thread.sleep(50);
+			count = fdDir.list().length;
+		}
+		assertTrue("proxy leaked " + (count - baseline) + " client channels", count <= baseline);
+		assertProxyIdle();
+
+		Socket[] t = openTunnel();
+		t[1].getOutputStream().write("ping".getBytes("utf-8"));
+		assertEquals("ping", readExactly(t[0].getInputStream(), 4));
+		t[0].close();
+		t[1].close();
+	}
+
+	// a client that sends a full CONNECT and closes at once must cause exactly one upstream connect, which is then
+	// closed. Re-reading the EOF in the header phase re-parsed the buffered request and connected again on every spin.
+	@Test(timeout = 30000)
+	public void startsOneUpstreamConnectPerRequest() throws Exception {
+		Socket client = new Socket("127.0.0.1", proxyPort);
+		String target = "127.0.0.1:" + upstream.getLocalPort();
+		String req = "CONNECT " + target + " HTTP/1.1\r\nHost: " + target + "\r\n\r\n";
+		client.getOutputStream().write(req.getBytes("utf-8"));
+		client.close();
+
+		Socket server = upstream.accept();
+		server.setSoTimeout(5000);
+		assertEquals(-1, server.getInputStream().read());
+		server.close();
+
+		upstream.setSoTimeout(1000);
+		try {
+			Socket extra = upstream.accept();
+			extra.close();
+			throw new AssertionError("proxy started a second upstream connect for one request");
+		} catch (SocketTimeoutException e) {
+			// expected
+		}
+		assertProxyIdle();
+	}
+
+	// an upstream EOF closes the client side too, so the client does not wait for data that never comes
+	@Test(timeout = 30000)
+	public void closesClientWhenUpstreamCloses() throws Exception {
+		Socket[] t = openTunnel();
+		t[0].setSoTimeout(5000);
+		t[1].close();
+		assertEquals(-1, t[0].getInputStream().read());
+		t[0].close();
+	}
+
 	// returns { client socket, upstream-side socket }
 	private Socket[] openTunnel() throws IOException {
 		Socket client = new Socket("127.0.0.1", proxyPort);
@@ -142,6 +218,21 @@ public class HttpProxyServerTest {
 		String resp = readHeaders(client.getInputStream());
 		assertTrue(resp, resp.startsWith("HTTP/1.1 200 "));
 		return new Socket[] { client, server };
+	}
+
+	// fails if the selector thread burns CPU while no connection has pending work
+	private void assertProxyIdle() throws InterruptedException {
+		ThreadMXBean mx = ManagementFactory.getThreadMXBean();
+		Assume.assumeTrue(mx.isThreadCpuTimeSupported());
+		if (!mx.isThreadCpuTimeEnabled())
+			mx.setThreadCpuTimeEnabled(true);
+
+		// let in-flight work settle before measuring
+		Thread.sleep(200);
+		long before = mx.getThreadCpuTime(proxyThread.getId());
+		Thread.sleep(1000);
+		long usedMillis = (mx.getThreadCpuTime(proxyThread.getId()) - before) / 1000000;
+		assertTrue("proxy selector thread used " + usedMillis + "ms CPU in 1s while idle", usedMillis < 200);
 	}
 
 	private void waitForProxy() throws Exception {
