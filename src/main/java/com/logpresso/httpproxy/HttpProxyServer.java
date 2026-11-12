@@ -12,6 +12,9 @@ import java.nio.channels.SocketChannel;
 import java.util.Set;
 
 public class HttpProxyServer {
+	// request headers larger than this are rejected instead of buffered without limit
+	static final int MAX_HEADER_SIZE = 16 * 1024;
+
 	private Logger logger = new ConsoleLogger();
 	private Configuration conf;
 
@@ -136,6 +139,14 @@ public class HttpProxyServer {
 
 				if (len > 0)
 					ctx.buffer.write(ctx.temp, 0, len);
+
+				if (ctx.buffer.size() > MAX_HEADER_SIZE) {
+					logger.warn("Rejected request headers over " + MAX_HEADER_SIZE + " bytes from " + channel.getRemoteAddress());
+					String msg = "HTTP/1.1 431 Request Header Fields Too Large\r\nConnection: close\r\n\r\n";
+					ensureWrite(channel, ByteBuffer.wrap(msg.getBytes("utf-8")));
+					channel.close();
+					return;
+				}
 
 				String headers = ctx.buffer.toString("utf-8");
 				if (headers.endsWith("\r\n\r\n")) {

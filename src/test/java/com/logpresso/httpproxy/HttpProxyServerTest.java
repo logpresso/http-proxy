@@ -194,6 +194,33 @@ public class HttpProxyServerTest {
 		assertProxyIdle();
 	}
 
+	// request headers that exceed the cap without a terminating blank line are rejected, not buffered forever
+	@Test(timeout = 30000)
+	public void rejectsOversizedHeaders() throws Exception {
+		Socket client = new Socket("127.0.0.1", proxyPort);
+		client.setSoTimeout(5000);
+		String target = "127.0.0.1:" + upstream.getLocalPort();
+		StringBuilder sb = new StringBuilder("CONNECT " + target + " HTTP/1.1\r\nHost: " + target + "\r\n");
+		while (sb.length() <= HttpProxyServer.MAX_HEADER_SIZE)
+			sb.append("X-Padding: 0123456789012345678901234567890123456789\r\n");
+		client.getOutputStream().write(sb.toString().getBytes("utf-8"));
+
+		String resp = readHeaders(client.getInputStream());
+		assertTrue(resp, resp.startsWith("HTTP/1.1 431 "));
+		assertEquals(-1, client.getInputStream().read());
+		client.close();
+
+		// no upstream connect was attempted
+		upstream.setSoTimeout(500);
+		try {
+			Socket extra = upstream.accept();
+			extra.close();
+			throw new AssertionError("proxy connected upstream for an oversized request");
+		} catch (SocketTimeoutException e) {
+			// expected
+		}
+	}
+
 	// an upstream EOF closes the client side too, so the client does not wait for data that never comes
 	@Test(timeout = 30000)
 	public void closesClientWhenUpstreamCloses() throws Exception {
